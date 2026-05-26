@@ -1,0 +1,26 @@
+[project]
+name = "paperflow"
+version = "0.1.0"
+description = "A comprehensive literature workflow tool integrating Zotero, AI, Notion, PDF Translation and Obsidian"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "python-dotenv",
+    "pydantic",
+    "PyYAML",
+    "requests",
+    "click",
+    "pyzotero",
+    "notion-client",
+    "pypdf",
+    "pymupdf",
+    "openai",
+    "tenacity",
+    "rich",
+]
+
+[project.scripts]
+paperflow = "paperflow.main:cli"
+
+[tool.setuptools.packages.find]
+include = ["paperflow*"]

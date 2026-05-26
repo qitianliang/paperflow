@@ -1,0 +1,148 @@
+project:
+  name: paperflow
+  active_topic: "example_topic"
+  research_topic: "Describe your research question"
+  topics:
+    example_topic:
+      label: "Example topic"
+      research_topic: "Describe your research question"
+      collection_id_env: "COLLECTION_ID"
+      notion_tag: "example-topic"
+      obsidian_subdir: "example-topic"
+
+zotero:
+  library_type: "user"
+  user_id_env: "ZOTERO_USER_ID"
+  api_key_env: "ZOTERO_API_KEY"
+  default_collection_id_env: "COLLECTION_ID"
+  default_collection_id: ""
+  attachment_strategy:
+    locate_original_pdf: true
+    upload_translated_pdf_to_zotero: false
+    upload_mode: "imported_file"
+    translated_pdf_tag: "translated-pdf"
+    translated_dual_title_suffix: " - dual translated"
+    translated_mono_title_suffix: " - mono translated"
+
+notion:
+  token_env: "NOTION_TOKEN"
+  database_id_env: "NOTION_DATABASE_ID"
+  data_source_id_env: "NOTION_DATA_SOURCE_ID"
+  preserve_human_decision: true
+  use_environment_proxy: true
+
+obsidian:
+  vault_path_env: "OBSIDIAN_VAULT_PATH"
+  literature_note_dir: "Literature/Notes"
+  pdf_dir: "Literature/PDFs"
+  translated_pdf_dir: "Literature/PDFs/Translated"
+
+pdf:
+  max_pages_for_speed_card: 8
+  max_chars_for_speed_card: 30000
+  max_chars_for_deep_read: 120000
+  sample_sections: 3
+  extract_strategy: "simple"
+
+llm:
+  default_provider: "deepseek"
+  fallback_provider: "openai"
+  request_timeout_seconds: 120
+  max_retries: 2
+  max_output_tokens: 12000
+
+  providers:
+    deepseek:
+      api_key_env: "DEEPSEEK_API_KEY"
+      base_url: "https://api.deepseek.com"
+      models:
+        cheap: "deepseek-chat"
+        balanced: "deepseek-chat"
+        strong: "deepseek-reasoner"
+
+    openai:
+      api_key_env: "OPENAI_API_KEY"
+      base_url: null
+      models:
+        cheap: "gpt-5.5-mini"
+        balanced: "gpt-5.5"
+        strong: "gpt-5.5-thinking"
+
+  routing:
+    metadata_cleanup:
+      provider: "deepseek"
+      model_tier: "cheap"
+    speed_card:
+      provider: "deepseek"
+      model_tier: "cheap"
+    batch_compare:
+      provider: "deepseek"
+      model_tier: "balanced"
+    deep_read:
+      provider: "deepseek"
+      model_tier: "strong"
+    obsidian_note:
+      provider: "deepseek"
+      model_tier: "balanced"
+    json_repair:
+      provider: "deepseek"
+      model_tier: "cheap"
+
+translation:
+  enabled: true
+
+  trigger:
+    human_decision: "Must Read"
+    pdf_status: "Has PDF"
+
+  pdf2zh:
+    executable_env: "PDF2ZH_EXECUTABLE"
+    executable_default: "pdf2zh"
+    source_lang: "en"
+    target_lang: "zh"
+    service: "openai"
+    # 模型定义已统一到 llm.providers，此处仅引用
+    llm_provider: "deepseek"
+    model_tier: "balanced"
+    threads: 2
+    timeout_minutes: 90
+    max_concurrent_papers: 1
+    use_custom_prompt: true
+    prompt_file: "prompts/pdf2zh_translate_prompt.md"
+    config_file: "data/pdf2zh_config.json"
+    output_types:
+      - "mono"
+      - "dual"
+
+  paths:
+    staging_dir: "data/translation_staging"
+    output_dir: "Literature/PDFs/Translated"
+
+  behavior:
+    copy_original_pdf: true
+    skip_if_translated_exists: true
+    overwrite_existing: false
+    max_retries: 2
+    update_notion: true
+    update_obsidian_links: true
+    attach_back_to_zotero: false
+
+screening:
+  score_weights:
+    topic_relevance_score: 0.35
+    method_relevance_score: 0.25
+    data_relevance_score: 0.15
+    novelty_score: 0.15
+    reproducibility_score: 0.10
+
+  suggestion_thresholds:
+    must_read: 4.2
+    scan: 3.2
+    park: 2.2
+
+cache:
+  enabled: true
+  force_refresh: false
+
+logging:
+  level: "INFO"
