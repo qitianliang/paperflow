@@ -44,7 +44,8 @@ class DeepReader:
 
         client, model = self.router.get_client_and_model("deep_read")
 
-        logger.info(f"Requesting Deep Read for '{metadata.title}' using {model}...")
+        log_title = metadata.title.encode("ascii", errors="backslashreplace").decode("ascii")
+        logger.info(f"Requesting Deep Read for '{log_title}' using {model}...")
         try:
             response = client.chat.completions.create(
                 model=model,

@@ -1,6 +1,7 @@
 import os
 import click
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from paperflow.config import Config, get_config
 from paperflow.logging_utils import setup_logging, get_logger
 from paperflow.zotero_client import ZoteroClient
@@ -174,15 +175,11 @@ def run_screening(collection):
     from paperflow.screening import Screener
     from paperflow.pdf_locator import PDFLocator
     from paperflow.pdf_extract import PDFExtractor
-    screener = Screener()
-    locator = PDFLocator()
-    extractor = PDFExtractor()
-
-    count = 0
-    failures = []
-    for item in items:
-        metadata = client.parse_item(item, items)
-        if metadata:
+    def assess_paper(metadata):
+        screener = Screener()
+        locator = PDFLocator()
+        extractor = PDFExtractor()
+        try:
             speed_card = None
             assessment_signature = screener.assessment_signature(metadata)
             speed_card_data = cache.load_json(metadata.zotero_key, "speed_card.json")
@@ -220,9 +217,29 @@ def run_screening(collection):
                         "signature": assessment_signature,
                         "has_full_text": bool(paper_text),
                     })
-                else:
-                    failures.append(metadata.zotero_key)
+            return metadata, speed_card, speed_card is None
+        except Exception as e:
+            logger.exception(f"Screening failed for {metadata.zotero_key}: {e}")
+            return metadata, None, True
 
+    metadata_items = [
+        metadata for item in items
+        if (metadata := client.parse_item(item, items)) is not None
+    ]
+    max_workers = config.screening.max_concurrent_papers
+    logger.info(f"Screening {len(metadata_items)} papers with {max_workers} worker(s)")
+    failures = []
+    count = 0
+    if max_workers > 1:
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        outcomes = executor.map(assess_paper, metadata_items)
+    else:
+        executor = None
+        outcomes = map(assess_paper, metadata_items)
+    try:
+        for metadata, speed_card, failed in outcomes:
+            if failed:
+                failures.append(metadata.zotero_key)
             cache.save_json(metadata.zotero_key, "metadata.json", metadata.model_dump())
             digest = _notion_sync_digest(config, metadata, speed_card)
             previous_sync = cache.load_json(metadata.zotero_key, "notion_sync.json") or {}
@@ -232,6 +249,9 @@ def run_screening(collection):
                 notion.upsert_paper(metadata, speed_card=speed_card)
                 cache.save_json(metadata.zotero_key, "notion_sync.json", {"digest": digest})
             count += 1
+    finally:
+        if executor:
+            executor.shutdown(wait=True)
 
     logger.info(f"Screening flow completed. Processed {count} items.")
     if failures:
@@ -415,8 +435,8 @@ def sync_translation_status():
 
 @cli.command()
 def deep_read():
-    """Run AI deep reading on 'Must Read' papers."""
-    logger.info("Running deep reading on 'Must Read' papers (independent of translation)...")
+    """Run AI deep reading on configured ranked and human-selected papers."""
+    logger.info("Running deep reading on configured candidates (independent of translation)...")
     from paperflow.deep_read import DeepReader
     from paperflow.schemas import PaperMetadata
     from paperflow.screening import Screener
@@ -424,13 +444,8 @@ def deep_read():
     from paperflow.pdf_extract import PDFExtractor
 
     notion = NotionClientWrapper()
-    # We query Notion directly for Must Read papers, ignoring translation status
-    papers = notion.list_topic_pages(filter={
-        "property": "Human Decision",
-        "select": {"equals": "Must Read"}
-    })
-
-    logger.info(f"Found {len(papers)} 'Must Read' papers for deep read.")
+    papers = notion.get_deep_read_papers()
+    logger.info(f"Found {len(papers)} papers for deep read.")
 
     reader = DeepReader()
     locator = PDFLocator()
@@ -487,18 +502,15 @@ def deep_read():
 
 @cli.command()
 def export_obsidian():
-    """Export 'Must Read' papers to Obsidian notes."""
-    logger.info("Exporting 'Must Read' papers to Obsidian...")
+    """Export deep-read candidate papers to Obsidian notes."""
+    logger.info("Exporting deep-read candidates to Obsidian...")
     from paperflow.obsidian_export import ObsidianExporter
     from paperflow.schemas import PaperMetadata
     from paperflow.screening import Screener
 
     config = get_config()
     notion = NotionClientWrapper()
-    papers = notion.list_topic_pages(filter={
-        "property": "Human Decision",
-        "select": {"equals": "Must Read"}
-    })
+    papers = notion.get_deep_read_papers()
 
     exporter = ObsidianExporter()
     screener = Screener()
@@ -577,9 +589,9 @@ def attach_translations_to_zotero():
 @click.option('--translate', is_flag=True, help='Enable PDF translation step (disabled by default)')
 @click.option('--model-tier', default=None, type=click.Choice(['cheap', 'balanced', 'strong']), help='Translation model tier (default: from config)')
 def run_must_read(translate, model_tier):
-    """Run the Must Read flow (queue -> [translate] -> deep read -> export).
+    """Run selected flow (Must Read translation queue -> candidates deep read -> export).
 
-    Translation is disabled by default. Use --translate to enable it.
+    Translation is human Must Read only and disabled by default. Use --translate to enable it.
     """
     logger.info("Running 'Must Read' flow...")
     from paperflow.translation_queue import TranslationQueue
@@ -636,13 +648,11 @@ def run_must_read(translate, model_tier):
     extractor = PDFExtractor()
     screener = Screener()
     try:
-        must_read_papers = notion.list_topic_pages(filter={
-            "property": "Human Decision", "select": {"equals": "Must Read"}
-        })
+        deep_read_papers = notion.get_deep_read_papers()
     except Exception as e:
-        logger.error(f"Failed to query Notion for Must Read papers (after retries): {e}")
-        must_read_papers = []
-    for paper in must_read_papers:
+        logger.error(f"Failed to query Notion for deep read candidates (after retries): {e}")
+        deep_read_papers = []
+    for paper in deep_read_papers:
         props = paper.get("properties", {})
         try:
             zotero_key = props.get("Zotero Key", {}).get("rich_text", [])[0].get("text", {}).get("content", "")
@@ -682,7 +692,7 @@ def run_must_read(translate, model_tier):
     logger.info("--- Step 4: Export to Obsidian ---")
     from paperflow.obsidian_export import ObsidianExporter
     exporter = ObsidianExporter()
-    for paper in must_read_papers:
+    for paper in deep_read_papers:
         props = paper.get("properties", {})
         try:
             zotero_key = props.get("Zotero Key", {}).get("rich_text", [])[0].get("text", {}).get("content", "")

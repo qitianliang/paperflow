@@ -64,6 +64,7 @@ class NotionClientWrapper:
             self.data_source_id = sources[0]["id"]
         self.preserve_human_decision = config.notion.preserve_human_decision
         self.topic_tag = config.project.topic_label
+        self.deep_read_selection = config.deep_read_selection
         self._page_index: Optional[Dict[str, Dict[str, Any]]] = None
 
     @_retry_on_network_error
@@ -158,6 +159,39 @@ class NotionClientWrapper:
             if not response.get("has_more"):
                 return pages
             cursor = response.get("next_cursor") or ""
+
+    def get_deep_read_papers(self) -> List[Dict[str, Any]]:
+        """Select automatic top-ranked papers plus explicit human Must Read choices."""
+        pages = self.list_topic_pages()
+        selected: List[Dict[str, Any]] = []
+        selected_ids = set()
+
+        if self.deep_read_selection.enabled and self.deep_read_selection.top_n:
+            scored = [
+                page for page in pages
+                if page.get("properties", {}).get("Priority Score", {}).get("number") is not None
+            ]
+            scored.sort(
+                key=lambda page: page["properties"]["Priority Score"]["number"],
+                reverse=True,
+            )
+            for page in scored[:self.deep_read_selection.top_n]:
+                selected.append(page)
+                selected_ids.add(page["id"])
+
+        if self.deep_read_selection.include_human_must_read:
+            for page in pages:
+                decision = page.get("properties", {}).get("Human Decision", {}).get("select") or {}
+                if decision.get("name") == "Must Read" and page["id"] not in selected_ids:
+                    selected.append(page)
+                    selected_ids.add(page["id"])
+
+        logger.info(
+            f"Selected {len(selected)} papers for deep read "
+            f"(automatic top_n={self.deep_read_selection.top_n if self.deep_read_selection.enabled else 0}, "
+            f"include_human_must_read={self.deep_read_selection.include_human_must_read})"
+        )
+        return selected
 
     @staticmethod
     def _rich_text(value: str) -> Dict[str, Any]:

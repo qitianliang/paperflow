@@ -95,6 +95,16 @@ class Screener:
     def card_from_data(self, data: dict, has_full_text: bool = True) -> SpeedCard:
         """Accept legacy/model data, enforce enum and numeric output contract."""
         normalized = dict(data)
+        list_fields = (
+            "summary_en", "summary_zh", "technical_details", "main_contributions",
+            "limitations", "future_work", "key_evidence", "risk_need_check",
+        )
+        for field in list_fields:
+            value = normalized.get(field)
+            if isinstance(value, str):
+                normalized[field] = [value] if value.strip() else []
+            elif value is None:
+                normalized[field] = []
         score_fields = (
             "topic_relevance_score", "method_relevance_score",
             "data_relevance_score", "novelty_score", "reproducibility_score",
@@ -134,8 +144,9 @@ class Screener:
 
         abstract_len = len(metadata.abstract or "")
         text_len = len(paper_text or "")
+        log_title = metadata.title.encode("ascii", errors="backslashreplace").decode("ascii")
         logger.info(
-            f"Requesting Speed Card for '{metadata.title}': "
+            f"Requesting Speed Card for '{log_title}': "
             f"pdf_text={text_len} chars "
             f"(fed {len(truncated_text)} chars)"
         )

@@ -128,6 +128,7 @@ translation:
     attach_back_to_zotero: false
 
 screening:
+  max_concurrent_papers: 1
   score_weights:
     topic_relevance_score: 0.35
     method_relevance_score: 0.25
@@ -139,6 +140,11 @@ screening:
     must_read: 4.2
     scan: 3.2
     park: 2.2
+
+deep_read_selection:
+  enabled: false
+  top_n: 10
+  include_human_must_read: true
 
 cache:
   enabled: true

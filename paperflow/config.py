@@ -119,6 +119,7 @@ class PdfConfig(BaseModel):
     extract_strategy: str = "simple"
 
 class ScreeningConfig(BaseModel):
+    max_concurrent_papers: int = Field(default=1, ge=1, le=8)
     score_weights: Dict[str, float] = Field(default_factory=lambda: {
         "topic_relevance_score": 0.35,
         "method_relevance_score": 0.25,
@@ -150,6 +151,11 @@ class ScreeningConfig(BaseModel):
         if not 1 <= thresholds["park"] <= thresholds["scan"] <= thresholds["must_read"] <= 5:
             raise ValueError("suggestion_thresholds must be ordered within the 1-5 scale")
         return self
+
+class DeepReadSelectionConfig(BaseModel):
+    enabled: bool = False
+    top_n: int = Field(default=10, ge=0)
+    include_human_must_read: bool = True
 
 class CacheConfig(BaseModel):
     enabled: bool = True
@@ -261,6 +267,7 @@ class Config(BaseModel):
     obsidian: ObsidianConfig = ObsidianConfig()
     pdf: PdfConfig = PdfConfig()
     screening: ScreeningConfig = ScreeningConfig()
+    deep_read_selection: DeepReadSelectionConfig = DeepReadSelectionConfig()
     llm: LLMConfig = LLMConfig()
     translation: TranslationConfig = TranslationConfig()
     cache: CacheConfig = CacheConfig()

@@ -20,6 +20,11 @@ class ZoteroClient:
         logger.info(f"Fetching items from Zotero collection {collection_id}...")
         try:
             items = self.zot.everything(self.zot.collection_items(collection_id))
+            parent_count = sum(1 for item in items if not item.get("data", {}).get("parentItem"))
+            logger.info(
+                f"Fetched {len(items)} Zotero records: {parent_count} top-level papers "
+                f"and {len(items) - parent_count} child attachments/notes"
+            )
             return items
         except Exception as e:
             logger.error(f"Failed to fetch Zotero items: {e}")

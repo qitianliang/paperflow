@@ -79,7 +79,8 @@ class ObsidianExporter:
         prompt = prompt.replace("{{speed_card_json}}", speed_card.model_dump_json(indent=2))
         prompt = prompt.replace("{{deep_read_json}}", json.dumps(deep_read, indent=2, ensure_ascii=False))
 
-        logger.info(f"Requesting Obsidian note formatting for '{metadata.title}'...")
+        log_title = metadata.title.encode("ascii", errors="backslashreplace").decode("ascii")
+        logger.info(f"Requesting Obsidian note formatting for '{log_title}'...")
         try:
             response = client.chat.completions.create(
                 model=model,
