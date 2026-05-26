@@ -7,6 +7,12 @@ Each topic gets:
 - A `Topic` value in Notion, used for filtered views and independent decisions.
 - Dedicated cache, PDF staging, translated output, and Obsidian note directories.
 
+Translated outputs retain the topic boundary twice: generated PDFs remain under
+`Literature/PDFs/Translated/<topic>/<zotero_key>/`, while PDFs referenced by
+Obsidian notes are published under
+`<vault>/Literature/PDFs/Translated/<topic>/<zotero_key>/`. Deep reads keep
+using original PDFs as evidence inputs.
+
 Example local configuration:
 
 ```yaml

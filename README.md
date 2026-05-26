@@ -257,6 +257,32 @@ paperflow export-obsidian
 默认情况下，翻译后的 PDF 只存在于本地，并在 Obsidian 笔记中做关联。你可以在 `config.yaml` 中设置 `zotero.attachment_strategy.upload_translated_pdf_to_zotero: true` 来将其作为子附件挂载回 Zotero 原始条目中。
 *提示：上传到 Zotero 可能会占用你的 Zotero 文件存储空间。*
 
+### 翻译文件的后续路径
+
+翻译后不替换原文输入：speed card 与 deep read 仍以原始 PDF 为证据源。译文按下列三层组织：
+
+```text
+data/translation_staging/<topic>/<zotero_key>/        # 原文工作副本
+Literature/PDFs/Translated/<topic>/<zotero_key>/      # pdf2zh 生成输出
+<vault>/Literature/PDFs/Translated/<topic>/<zotero_key>/  # Obsidian 发布副本
+```
+
+当 `translation.behavior.update_obsidian_links: true` 时，翻译成功会发布译文
+PDF 到 vault，并在 cache 保存 `translation_artifacts.json` 路径清单。Notion
+的 `Translated Mono PDF`/`Translated Dual PDF` 与 Obsidian 笔记随后引用发布
+路径，因此不同主题、不同论文不会发生同名 PDF 冲突。
+
+`paperflow run-must-read --translate` 会在同一流程内翻译后刷新笔记。若单独
+执行 `paperflow translate-queued` 或迁移历史译文，运行：
+
+```bash
+paperflow sync-translation-status
+paperflow export-obsidian
+```
+
+第一步将现有译文发布到 vault 并更新 Notion 路径；第二步依靠内容指纹只
+重写链接发生变化的笔记。
+
 ## 设计原则声明
 - **Human Decision 优先级**：为什么默认不覆盖 `Human Decision`？因为自动化工具只是辅助筛选，学术决断必须且永远属于人类研究者。
 - **保护原始文件**：为什么默认不修改 Zotero 原始 PDF？防止因翻译失败或格式破坏导致原文不可用，项目采用先 Copy 至缓存区（staging），再处理并输出到指定文件夹的策略。

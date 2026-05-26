@@ -311,11 +311,12 @@ def translate_queued(model_tier):
     from paperflow.translation_queue import TranslationQueue
     from paperflow.pdf2zh_runner import PDF2ZHRunner
     from paperflow.notion_client import NotionClientWrapper
-    from paperflow.cache import cache as paper_cache
+    from paperflow.translation_artifacts import TranslationArtifacts
 
     qm = TranslationQueue()
     runner = PDF2ZHRunner(model_tier=model_tier)
     notion = NotionClientWrapper()
+    artifacts = TranslationArtifacts()
     queue = qm.load_queue()
 
     pending = [item for item in queue if item.get("status") == "pending"]
@@ -343,7 +344,11 @@ def translate_queued(model_tier):
         success, mono_pdf, dual_pdf, error = runner.run_translation(zotero_key, staged_path)
 
         if success:
+            source_mono_pdf, source_dual_pdf = mono_pdf, dual_pdf
+            mono_pdf, dual_pdf = artifacts.publish(zotero_key, mono_pdf, dual_pdf)
             item["status"] = "done"
+            item["source_mono_pdf"] = source_mono_pdf
+            item["source_dual_pdf"] = source_dual_pdf
             item["mono_pdf"] = mono_pdf
             item["dual_pdf"] = dual_pdf
             notion.update_translation_status(item["page_id"], "Done", mono_pdf=mono_pdf, dual_pdf=dual_pdf)
@@ -367,6 +372,7 @@ def translate_one(zotero_key, model_tier):
     from paperflow.pdf2zh_runner import PDF2ZHRunner
     from paperflow.pdf_locator import PDFLocator
     from paperflow.cache import cache as paper_cache
+    from paperflow.translation_artifacts import TranslationArtifacts
 
     metadata = paper_cache.load_json(zotero_key, "metadata.json")
     if not metadata:
@@ -385,6 +391,7 @@ def translate_one(zotero_key, model_tier):
     success, mono_pdf, dual_pdf, error = runner.run_translation(zotero_key, staged_path)
 
     if success:
+        mono_pdf, dual_pdf = TranslationArtifacts().publish(zotero_key, mono_pdf, dual_pdf)
         logger.info(f"Translation succeeded for {zotero_key}")
         logger.info(f"  Mono PDF: {mono_pdf}")
         logger.info(f"  Dual PDF: {dual_pdf}")
@@ -407,10 +414,12 @@ def sync_translation_status():
     logger.info("Syncing translation status to Notion...")
     from paperflow.translation_queue import TranslationQueue
     from paperflow.notion_client import NotionClientWrapper
+    from paperflow.translation_artifacts import TranslationArtifacts
 
     qm = TranslationQueue()
     queue = qm.load_queue()
     notion = NotionClientWrapper()
+    artifacts = TranslationArtifacts()
 
     updated = 0
     for item in queue:
@@ -428,9 +437,14 @@ def sync_translation_status():
         mono_pdf = item.get("mono_pdf", "")
         dual_pdf = item.get("dual_pdf", "")
         error = item.get("error", "")
+        if status == "done":
+            mono_pdf, dual_pdf = artifacts.publish(item["zotero_key"], mono_pdf, dual_pdf)
+            item["mono_pdf"] = mono_pdf
+            item["dual_pdf"] = dual_pdf
         notion.update_translation_status(page_id, notion_status, mono_pdf=mono_pdf, dual_pdf=dual_pdf, error_msg=error)
         updated += 1
 
+    qm.save_queue(queue)
     logger.info(f"Synced {updated} items to Notion.")
 
 @cli.command()
@@ -505,6 +519,7 @@ def export_obsidian():
     """Export deep-read candidate papers to Obsidian notes."""
     logger.info("Exporting deep-read candidates to Obsidian...")
     from paperflow.obsidian_export import ObsidianExporter
+    from paperflow.translation_artifacts import TranslationArtifacts
     from paperflow.schemas import PaperMetadata
     from paperflow.screening import Screener
 
@@ -513,6 +528,7 @@ def export_obsidian():
     papers = notion.get_deep_read_papers()
 
     exporter = ObsidianExporter()
+    artifacts = TranslationArtifacts()
     screener = Screener()
 
     for paper in papers:
@@ -549,6 +565,7 @@ def export_obsidian():
         except IndexError:
             dual_pdf = ""
 
+        mono_pdf, dual_pdf = artifacts.resolve(zotero_key, mono_pdf, dual_pdf)
         digest = _obsidian_sync_digest(
             config, metadata, speed_card, deep_read_data, mono_pdf, dual_pdf,
             formatter_context=exporter.cache_context(),
@@ -596,7 +613,9 @@ def run_must_read(translate, model_tier):
     logger.info("Running 'Must Read' flow...")
     from paperflow.translation_queue import TranslationQueue
     from paperflow.notion_client import NotionClientWrapper
+    from paperflow.translation_artifacts import TranslationArtifacts
     notion = NotionClientWrapper()
+    artifacts = TranslationArtifacts()
 
     # Step 1: Queue translation (always build queue, only run if --translate)
     logger.info("--- Step 1: Queue Translation ---")
@@ -624,7 +643,11 @@ def run_must_read(translate, model_tier):
             notion.update_translation_status(item["page_id"], "Running")
             success, mono_pdf, dual_pdf, error = runner.run_translation(zotero_key, staged_path)
             if success:
+                source_mono_pdf, source_dual_pdf = mono_pdf, dual_pdf
+                mono_pdf, dual_pdf = artifacts.publish(zotero_key, mono_pdf, dual_pdf)
                 item["status"] = "done"
+                item["source_mono_pdf"] = source_mono_pdf
+                item["source_dual_pdf"] = source_dual_pdf
                 item["mono_pdf"] = mono_pdf
                 item["dual_pdf"] = dual_pdf
                 notion.update_translation_status(item["page_id"], "Done", mono_pdf=mono_pdf, dual_pdf=dual_pdf)
@@ -718,6 +741,7 @@ def run_must_read(translate, model_tier):
             dual_pdf = props.get("Translated Dual PDF", {}).get("rich_text", [])[0].get("text", {}).get("content", "")
         except IndexError:
             dual_pdf = ""
+        mono_pdf, dual_pdf = artifacts.resolve(zotero_key, mono_pdf, dual_pdf)
         digest = _obsidian_sync_digest(
             get_config(), metadata, speed_card, deep_read_data, mono_pdf, dual_pdf,
             formatter_context=exporter.cache_context(),
@@ -775,11 +799,12 @@ def retry_failed():
     from paperflow.translation_queue import TranslationQueue
     from paperflow.pdf2zh_runner import PDF2ZHRunner
     from paperflow.notion_client import NotionClientWrapper
-    from paperflow.cache import cache as paper_cache
+    from paperflow.translation_artifacts import TranslationArtifacts
 
     qm = TranslationQueue()
     runner = PDF2ZHRunner()
     notion = NotionClientWrapper()
+    artifacts = TranslationArtifacts()
     queue = qm.load_queue()
 
     failed = [item for item in queue if item.get("status") == "failed" and item.get("retry_count", 0) < 3]
@@ -801,7 +826,11 @@ def retry_failed():
         qm.save_queue(queue)
         success, mono_pdf, dual_pdf, error = runner.run_translation(zotero_key, staged_path)
         if success:
+            source_mono_pdf, source_dual_pdf = mono_pdf, dual_pdf
+            mono_pdf, dual_pdf = artifacts.publish(zotero_key, mono_pdf, dual_pdf)
             item["status"] = "done"
+            item["source_mono_pdf"] = source_mono_pdf
+            item["source_dual_pdf"] = source_dual_pdf
             item["mono_pdf"] = mono_pdf
             item["dual_pdf"] = dual_pdf
             item["error"] = ""

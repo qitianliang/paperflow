@@ -1,12 +1,16 @@
 import os
+import tempfile
 import unittest
 from unittest.mock import patch
 from pydantic import ValidationError
 
+from paperflow.cache import Cache
 from paperflow.config import Config, DeepReadSelectionConfig
 from paperflow.notion_client import AI_DETAILS_TITLE, NotionClientWrapper
+from paperflow.obsidian_export import ObsidianExporter
 from paperflow.schemas import PaperMetadata, SpeedCard
 from paperflow.screening import Screener
+from paperflow.translation_artifacts import TranslationArtifacts
 from paperflow.utils import sample_long_text
 
 
@@ -185,6 +189,39 @@ class NotionBodyTests(unittest.TestCase):
         selected = wrapper.get_deep_read_papers()
 
         self.assertEqual([page["id"] for page in selected], ["top", "second", "manual"])
+
+
+class TranslationArtifactTests(unittest.TestCase):
+    def test_published_translation_uses_vault_relative_obsidian_link(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vault = os.path.join(temp_dir, "vault")
+            source = os.path.join(temp_dir, "generated", "paper-mono.pdf")
+            os.makedirs(os.path.dirname(source), exist_ok=True)
+            with open(source, "wb") as handle:
+                handle.write(b"pdf")
+            config = Config(
+                project={
+                    "active_topic": "topic",
+                    "topics": {"topic": {"obsidian_subdir": "topic"}},
+                },
+                obsidian={"vault_path_env": "UNIT_VAULT"},
+                translation={"behavior": {"update_obsidian_links": True}},
+            )
+            with patch.dict(os.environ, {"UNIT_VAULT": vault}):
+                artifacts = TranslationArtifacts(
+                    config=config,
+                    cache_store=Cache(os.path.join(temp_dir, "cache")),
+                )
+                mono_pdf, dual_pdf = artifacts.publish("KEY", source, "")
+                exporter = ObsidianExporter.__new__(ObsidianExporter)
+                exporter.vault_path = vault
+
+                self.assertTrue(os.path.exists(mono_pdf))
+                self.assertEqual(dual_pdf, "")
+                self.assertEqual(
+                    exporter._pdf_link(mono_pdf),
+                    "[[Literature/PDFs/Translated/topic/KEY/paper-mono.pdf]]",
+                )
 
 
 if __name__ == "__main__":

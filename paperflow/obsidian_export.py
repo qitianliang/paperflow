@@ -44,6 +44,19 @@ class ObsidianExporter:
             return "无"
         return "\n".join([f"- {item}" for item in items])
 
+    def _pdf_link(self, pdf_path: str) -> str:
+        if not pdf_path:
+            return "未生成"
+        absolute_pdf = os.path.abspath(pdf_path)
+        absolute_vault = os.path.abspath(self.vault_path) if self.vault_path else ""
+        try:
+            if absolute_vault and os.path.commonpath([absolute_vault, absolute_pdf]) == absolute_vault:
+                relative_path = os.path.relpath(absolute_pdf, absolute_vault).replace(os.sep, "/")
+                return f"[[{relative_path}]]"
+        except ValueError:
+            pass
+        return f"[{os.path.basename(pdf_path)}]({pdf_path})"
+
     def export_note(self, metadata: PaperMetadata, speed_card: SpeedCard, deep_read: Dict[str, Any], mono_pdf: str, dual_pdf: str) -> bool:
         if not self.vault_path:
             logger.warning("Obsidian vault path is not configured. Skipping export.")
@@ -67,8 +80,8 @@ class ObsidianExporter:
 
         # PDF links (Obsidian syntax)
         note_content = note_content.replace("{{original_pdf_link}}", f"[{metadata.title} (Original)]({metadata.zotero_link})" if metadata.zotero_link else "无")
-        note_content = note_content.replace("{{translated_dual_pdf_link}}", f"[[{os.path.basename(dual_pdf)}]]" if dual_pdf else "未生成")
-        note_content = note_content.replace("{{translated_mono_pdf_link}}", f"[[{os.path.basename(mono_pdf)}]]" if mono_pdf else "未生成")
+        note_content = note_content.replace("{{translated_dual_pdf_link}}", self._pdf_link(dual_pdf))
+        note_content = note_content.replace("{{translated_mono_pdf_link}}", self._pdf_link(mono_pdf))
 
         from paperflow.llm.router import LLMRouter
         router = LLMRouter()
