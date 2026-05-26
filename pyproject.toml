@@ -6,12 +6,12 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "python-dotenv",
-    "pydantic",
+    "pydantic>=2.4.2",
     "PyYAML",
     "requests",
     "click",
     "pyzotero",
-    "notion-client",
+    "notion-client>=3.1.0",
     "pypdf",
     "pymupdf",
     "openai",

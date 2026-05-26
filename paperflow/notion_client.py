@@ -255,12 +255,14 @@ class NotionClientWrapper:
             properties["Reproducibility Score"] = {"number": speed_card.reproducibility_score}
             properties["Last AI Update"] = {"date": {"start": datetime.now(timezone.utc).isoformat()}}
             properties["Status"] = {"select": {"name": "Speed Card Done"}}
+            if speed_card.code_url.lower().startswith(("http://", "https://")):
+                properties["Code URL"] = {"url": speed_card.code_url}
             # Summary CN/EN
             if speed_card.summary_zh:
                 properties["Summary CN"] = {"rich_text": [{"text": {"content": "\n".join(speed_card.summary_zh)}}]}
             if speed_card.summary_en:
                 properties["Summary EN"] = {"rich_text": [{"text": {"content": "\n".join(speed_card.summary_en)}}]}
-        else:
+        elif not existing_page:
             properties["Status"] = {"select": {"name": "Collected"}}
 
         # Handle human decision preservation

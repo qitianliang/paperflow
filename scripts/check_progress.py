@@ -1,9 +1,13 @@
 """Check deep read and translation progress."""
 from paperflow.cache import cache
+from paperflow.config import get_config
 import os, json
 
+config = get_config()
+topic = config.project.topic_slug
+
 print("=== Deep Read Status ===")
-for key in ["CS7HSLJS", "8Q4FPYRN"]:
+for key in os.listdir(cache.base_dir) if os.path.isdir(cache.base_dir) else []:
     dr = cache.load_json(key, "deep_read.json")
     if dr:
         cq = dr.get("core_question", "?")
@@ -12,7 +16,7 @@ for key in ["CS7HSLJS", "8Q4FPYRN"]:
         print(f"{key}: no deep_read yet")
 
 print("\n=== Translation Status ===")
-qf = "data/translation_staging/queue.json"
+qf = os.path.join(config.translation.paths.staging_dir, topic, "queue.json")
 if os.path.exists(qf):
     with open(qf) as f:
         q = json.load(f)
@@ -24,7 +28,7 @@ if os.path.exists(qf):
         print(f"{zk}: status={st}, mono={mono}, dual={dual}")
 
 print("\n=== Translated PDFs ===")
-out = "Literature/PDFs/Translated"
+out = os.path.join(config.translation.paths.output_dir, topic)
 if os.path.exists(out):
     for root, dirs, files in os.walk(out):
         for f in files:

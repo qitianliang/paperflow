@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Any, Dict
+from typing import List, Optional, Any, Dict, Literal
 from datetime import datetime
 
 
@@ -36,15 +36,15 @@ class SpeedCard(BaseModel):
     limitations: List[str] = Field(default_factory=list)
     future_work: List[str] = Field(default_factory=list)
 
-    topic_relevance_score: int = 1
-    method_relevance_score: int = 1
-    data_relevance_score: int = 1
-    novelty_score: int = 1
-    reproducibility_score: int = 1
-    priority_score: float = 1.0
+    topic_relevance_score: int = Field(default=1, ge=1, le=5)
+    method_relevance_score: int = Field(default=1, ge=1, le=5)
+    data_relevance_score: int = Field(default=1, ge=1, le=5)
+    novelty_score: int = Field(default=1, ge=1, le=5)
+    reproducibility_score: int = Field(default=1, ge=1, le=5)
+    priority_score: float = Field(default=1.0, ge=1, le=5)
 
-    ai_suggestion: str = "Scan"
-    confidence: str = "Medium"
+    ai_suggestion: Literal["Must Read", "Scan", "Park", "Exclude"] = "Scan"
+    confidence: Literal["High", "Medium", "Low"] = "Medium"
     key_evidence: List[str] = Field(default_factory=list)
     risk_need_check: List[str] = Field(default_factory=list)
     recommended_human_action: str = ""

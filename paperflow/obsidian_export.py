@@ -25,6 +25,20 @@ class ObsidianExporter:
         if not self.prompt_path:
             raise FileNotFoundError(f"Could not find obsidian_note.md in any of: {prompt_paths}")
 
+    def cache_context(self) -> Dict[str, str]:
+        with open(self.prompt_path, "r", encoding="utf-8") as f:
+            template = f.read()
+        route = self.config.llm.routing.get("obsidian_note")
+        provider_name = route.provider if route else self.config.llm.default_provider
+        tier = route.model_tier if route else "balanced"
+        provider = self.config.llm.providers.get(provider_name)
+        return {
+            "template": template,
+            "provider": provider_name,
+            "base_url": provider.resolved_base_url if provider else "",
+            "model": provider.resolved_model(tier) if provider else "",
+        }
+
     def format_list(self, items: list) -> str:
         if not items:
             return "无"

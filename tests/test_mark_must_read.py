@@ -27,9 +27,8 @@ print(f'\nPapers with PDFs that can be marked Must Read: {len(must_read_keys)}')
 for key in must_read_keys[:2]:
     page = notion.find_page_by_zotero_key(key)
     if page:
-        notion.client.pages.update(
-            page_id=page['id'],
-            properties={
+        notion._update_page(
+            page['id'], {
                 'Human Decision': {'select': {'name': 'Must Read'}},
                 'Status': {'select': {'name': 'Must Read Confirmed'}},
             }

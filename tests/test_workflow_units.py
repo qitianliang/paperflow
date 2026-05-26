@@ -1,6 +1,7 @@
 import os
 import unittest
 from unittest.mock import patch
+from pydantic import ValidationError
 
 from paperflow.config import Config
 from paperflow.notion_client import AI_DETAILS_TITLE, NotionClientWrapper
@@ -28,6 +29,19 @@ class TopicConfigTests(unittest.TestCase):
             self.assertEqual(config.project.topic_label, "unit-test")
             self.assertEqual(config.project.topic_slug, "unit-test")
 
+    def test_invalid_scoring_config_is_rejected(self):
+        with self.assertRaises(ValidationError):
+            Config(screening={
+                "score_weights": {
+                    "topic_relevance_score": 1.0,
+                    "method_relevance_score": 1.0,
+                    "data_relevance_score": 1.0,
+                    "novelty_score": 1.0,
+                    "reproducibility_score": 1.0,
+                },
+                "suggestion_thresholds": {"must_read": 4.2, "scan": 3.2, "park": 2.2},
+            })
+
 
 class TextSamplingTests(unittest.TestCase):
     def test_samples_start_middle_and_end_with_limit(self):
@@ -41,18 +55,47 @@ class TextSamplingTests(unittest.TestCase):
 
     def test_recommendation_is_calculated_from_weighted_scores(self):
         screener = Screener()
-        card = SpeedCard(
-            topic_relevance_score=5,
-            method_relevance_score=4,
-            data_relevance_score=4,
-            novelty_score=3,
-            reproducibility_score=3,
-            priority_score=99,
-            ai_suggestion="Read",
-        )
-        normalized = screener.normalize_decision(card)
+        card = screener.card_from_data({
+            "topic_relevance_score": 5,
+            "method_relevance_score": 4,
+            "data_relevance_score": 4,
+            "novelty_score": 3,
+            "reproducibility_score": 3,
+            "priority_score": 99,
+            "ai_suggestion": "Read",
+            "confidence": "High",
+            "key_evidence": ["Evidence"],
+        })
+        normalized = card
         self.assertEqual(normalized.priority_score, 4.1)
         self.assertEqual(normalized.ai_suggestion, "Scan")
+
+    def test_low_evidence_blocks_must_read_recommendation(self):
+        screener = Screener()
+        card = screener.card_from_data({
+            "topic_relevance_score": 5,
+            "method_relevance_score": 5,
+            "data_relevance_score": 5,
+            "novelty_score": 5,
+            "reproducibility_score": 5,
+            "priority_score": 99,
+            "ai_suggestion": "Whatever",
+            "confidence": "High",
+            "key_evidence": [],
+        }, has_full_text=False)
+        self.assertEqual(card.priority_score, 5.0)
+        self.assertEqual(card.confidence, "Low")
+        self.assertEqual(card.ai_suggestion, "Scan")
+        self.assertTrue(card.risk_need_check)
+
+    def test_prompt_change_invalidates_assessment_signature(self):
+        screener = Screener()
+        metadata = PaperMetadata(zotero_key="K", title="Title", authors="")
+        with patch.object(screener, "load_prompt_template", return_value="prompt v1"):
+            first = screener.assessment_signature(metadata)
+        with patch.object(screener, "load_prompt_template", return_value="prompt v2"):
+            second = screener.assessment_signature(metadata)
+        self.assertNotEqual(first, second)
 
 
 class _FakeChildren:

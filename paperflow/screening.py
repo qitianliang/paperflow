@@ -1,5 +1,6 @@
 import json
 import os
+import hashlib
 from typing import Optional
 from paperflow.config import get_config
 from paperflow.llm.router import LLMRouter
@@ -26,7 +27,34 @@ class Screener:
         with open(self.prompt_path, "r", encoding="utf-8") as f:
             return f.read()
 
-    def normalize_decision(self, speed_card: SpeedCard) -> SpeedCard:
+    def assessment_signature(self, metadata: PaperMetadata) -> str:
+        """Track inputs whose changes require a fresh AI assessment."""
+        route = self.config.llm.routing.get("speed_card")
+        provider_name = route.provider if route else self.config.llm.default_provider
+        tier = route.model_tier if route else "balanced"
+        provider = self.config.llm.providers.get(provider_name)
+        payload = {
+            "prompt": self.load_prompt_template(),
+            "schema": SpeedCard.model_json_schema(),
+            "topic": self.config.project.resolved_research_topic,
+            "metadata": metadata.model_dump(),
+            "pdf": {
+                "pages": self.config.pdf.max_pages_for_speed_card,
+                "chars": self.config.pdf.max_chars_for_speed_card,
+                "sections": self.config.pdf.sample_sections,
+            },
+            "screening": {
+                "weights": self.config.screening.score_weights,
+                "thresholds": self.config.screening.suggestion_thresholds,
+            },
+            "provider": provider_name,
+            "base_url": provider.resolved_base_url if provider else "",
+            "model": provider.resolved_model(tier) if provider else "",
+        }
+        encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def normalize_decision(self, speed_card: SpeedCard, has_full_text: bool = True) -> SpeedCard:
         """Compute aggregate recommendation deterministically from bounded sub-scores."""
         weights = self.config.screening.score_weights
         score_fields = (
@@ -39,6 +67,14 @@ class Screener:
         for field in score_fields:
             value = max(1, min(5, int(getattr(speed_card, field))))
             setattr(speed_card, field, value)
+        if not speed_card.key_evidence:
+            speed_card.confidence = "Low"
+        elif not has_full_text and speed_card.confidence == "High":
+            speed_card.confidence = "Medium"
+        if not speed_card.risk_need_check:
+            speed_card.risk_need_check = ["Verify the main claims and evidence manually."]
+            if speed_card.confidence == "High":
+                speed_card.confidence = "Medium"
         speed_card.priority_score = round(
             sum(getattr(speed_card, field) * weights.get(field, 0.0) for field in score_fields),
             2,
@@ -52,7 +88,27 @@ class Screener:
             speed_card.ai_suggestion = "Park"
         else:
             speed_card.ai_suggestion = "Exclude"
+        if speed_card.ai_suggestion == "Must Read" and speed_card.confidence == "Low":
+            speed_card.ai_suggestion = "Scan"
         return speed_card
+
+    def card_from_data(self, data: dict, has_full_text: bool = True) -> SpeedCard:
+        """Accept legacy/model data, enforce enum and numeric output contract."""
+        normalized = dict(data)
+        score_fields = (
+            "topic_relevance_score", "method_relevance_score",
+            "data_relevance_score", "novelty_score", "reproducibility_score",
+        )
+        for field in score_fields:
+            try:
+                normalized[field] = max(1, min(5, int(normalized.get(field, 1))))
+            except (TypeError, ValueError):
+                normalized[field] = 1
+        if normalized.get("confidence") not in ("High", "Medium", "Low"):
+            normalized["confidence"] = "Low"
+        normalized["priority_score"] = 1.0
+        normalized["ai_suggestion"] = "Scan"
+        return self.normalize_decision(SpeedCard(**normalized), has_full_text=has_full_text)
 
     def generate_speed_card(self, metadata: PaperMetadata, paper_text: str = "") -> Optional[SpeedCard]:
         template = self.load_prompt_template()
@@ -107,7 +163,7 @@ class Screener:
             data = try_repair_json(content)
             if not data:
                 raise ValueError("LLM returned invalid JSON")
-            return self.normalize_decision(SpeedCard(**data))
+            return self.card_from_data(data, has_full_text=bool(paper_text))
 
         except Exception as e:
             logger.error(f"Failed to generate speed card for {metadata.zotero_key}: {e}")

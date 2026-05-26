@@ -7,7 +7,7 @@ def test_pdf_locator():
     locator = PDFLocator()
 
     # Get the first item from cache to test
-    cache_dir = "data/cache"
+    cache_dir = cache.base_dir
     if not os.path.exists(cache_dir):
         print("ERROR: Cache directory not found. Did fetch-zotero work?")
         return

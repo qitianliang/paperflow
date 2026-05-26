@@ -1,8 +1,12 @@
 """Check translation progress."""
 import os, json
+from paperflow.config import get_config
+
+config = get_config()
+topic = config.project.topic_slug
 
 # Check queue
-qf = 'data/translation_staging/queue.json'
+qf = os.path.join(config.translation.paths.staging_dir, topic, 'queue.json')
 if os.path.exists(qf):
     with open(qf) as f:
         q = json.load(f)
@@ -18,7 +22,7 @@ else:
     print('Queue file not found')
 
 # Check translations
-out_dir = 'Literature/PDFs/Translated'
+out_dir = os.path.join(config.translation.paths.output_dir, topic)
 if os.path.exists(out_dir):
     for root, dirs, files in os.walk(out_dir):
         for f in files:

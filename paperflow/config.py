@@ -1,6 +1,6 @@
 import os
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 from paperflow.utils import sanitize_filename
@@ -119,8 +119,37 @@ class PdfConfig(BaseModel):
     extract_strategy: str = "simple"
 
 class ScreeningConfig(BaseModel):
-    score_weights: Dict[str, float] = Field(default_factory=dict)
-    suggestion_thresholds: Dict[str, float] = Field(default_factory=dict)
+    score_weights: Dict[str, float] = Field(default_factory=lambda: {
+        "topic_relevance_score": 0.35,
+        "method_relevance_score": 0.25,
+        "data_relevance_score": 0.15,
+        "novelty_score": 0.15,
+        "reproducibility_score": 0.10,
+    })
+    suggestion_thresholds: Dict[str, float] = Field(default_factory=lambda: {
+        "must_read": 4.2,
+        "scan": 3.2,
+        "park": 2.2,
+    })
+
+    @model_validator(mode="after")
+    def validate_scoring(self) -> "ScreeningConfig":
+        required = {
+            "topic_relevance_score", "method_relevance_score",
+            "data_relevance_score", "novelty_score", "reproducibility_score",
+        }
+        if set(self.score_weights) != required:
+            raise ValueError(f"score_weights must define exactly: {sorted(required)}")
+        if any(weight < 0 for weight in self.score_weights.values()):
+            raise ValueError("score_weights cannot be negative")
+        if abs(sum(self.score_weights.values()) - 1.0) > 0.001:
+            raise ValueError("score_weights must sum to 1.0")
+        thresholds = self.suggestion_thresholds
+        if not all(name in thresholds for name in ("must_read", "scan", "park")):
+            raise ValueError("suggestion_thresholds requires must_read, scan, and park")
+        if not 1 <= thresholds["park"] <= thresholds["scan"] <= thresholds["must_read"] <= 5:
+            raise ValueError("suggestion_thresholds must be ordered within the 1-5 scale")
+        return self
 
 class CacheConfig(BaseModel):
     enabled: bool = True

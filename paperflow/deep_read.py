@@ -1,5 +1,6 @@
 import json
 import os
+import hashlib
 from typing import Optional, Dict, Any
 from paperflow.config import get_config
 from paperflow.llm.router import LLMRouter
@@ -69,3 +70,26 @@ class DeepReader:
         except Exception as e:
             logger.error(f"Failed to generate deep read for {metadata.zotero_key}: {e}")
             return None
+
+    def assessment_signature(self, metadata: PaperMetadata, speed_card: SpeedCard) -> str:
+        route = self.config.llm.routing.get("deep_read")
+        provider_name = route.provider if route else self.config.llm.default_provider
+        tier = route.model_tier if route else "balanced"
+        provider = self.config.llm.providers.get(provider_name)
+        with open(self.prompt_path, "r", encoding="utf-8") as f:
+            prompt_template = f.read()
+        payload = {
+            "prompt": prompt_template,
+            "topic": self.config.project.resolved_research_topic,
+            "metadata": metadata.model_dump(),
+            "speed_card": speed_card.model_dump(),
+            "pdf": {
+                "chars": self.config.pdf.max_chars_for_deep_read,
+                "sections": self.config.pdf.sample_sections,
+            },
+            "provider": provider_name,
+            "base_url": provider.resolved_base_url if provider else "",
+            "model": provider.resolved_model(tier) if provider else "",
+        }
+        encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()

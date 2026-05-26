@@ -7,6 +7,7 @@ from paperflow.schemas import SpeedCard
 from paperflow.cache import cache
 from paperflow.logging_utils import get_logger
 from paperflow.utils import sample_long_text, try_repair_json
+from paperflow.screening import Screener
 
 logger = get_logger(__name__)
 
@@ -14,6 +15,7 @@ class BatchComparer:
     def __init__(self):
         self.config = get_config()
         self.router = LLMRouter()
+        self.screener = Screener()
         prompt_paths = ["prompts/batch_compare.md", "paperflow/prompts/batch_compare.md", "../prompts/batch_compare.md"]
         self.prompt_path = None
         for path in prompt_paths:
@@ -33,8 +35,12 @@ class BatchComparer:
         for key in zotero_keys:
             data = cache.load_json(key, "speed_card.json")
             if data:
-                data["zotero_key"] = key
-                speed_cards.append(data)
+                assessment = cache.load_json(key, "speed_card_input.json") or {}
+                card = self.screener.card_from_data(
+                    data, has_full_text=assessment.get("has_full_text", False)
+                ).model_dump()
+                card["zotero_key"] = key
+                speed_cards.append(card)
 
         if not speed_cards:
             logger.warning("No speed cards found for comparison.")

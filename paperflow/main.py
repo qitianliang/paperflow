@@ -28,7 +28,7 @@ def _notion_sync_digest(config: Config, metadata, speed_card) -> str:
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
-def _obsidian_sync_digest(config: Config, metadata, speed_card, deep_read, mono_pdf: str, dual_pdf: str) -> str:
+def _obsidian_sync_digest(config: Config, metadata, speed_card, deep_read, mono_pdf: str, dual_pdf: str, formatter_context=None) -> str:
     payload = {
         "topic": config.project.topic_label,
         "metadata": metadata.model_dump(),
@@ -36,6 +36,7 @@ def _obsidian_sync_digest(config: Config, metadata, speed_card, deep_read, mono_
         "deep_read": deep_read,
         "mono_pdf": mono_pdf,
         "dual_pdf": dual_pdf,
+        "formatter": formatter_context or {},
     }
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -120,6 +121,8 @@ def sync_notion(collection, dry_run):
     notion = NotionClientWrapper()
     if not dry_run:
         notion.prime_page_index()
+    from paperflow.screening import Screener
+    screener = Screener()
 
     count = 0
     for item in items:
@@ -128,13 +131,27 @@ def sync_notion(collection, dry_run):
             speed_card_data = cache.load_json(metadata.zotero_key, "speed_card.json")
             speed_card = None
             if speed_card_data:
-                from paperflow.schemas import SpeedCard
-                from paperflow.screening import Screener
-                speed_card = Screener().normalize_decision(SpeedCard(**speed_card_data))
+                assessment = cache.load_json(metadata.zotero_key, "speed_card_input.json") or {}
+                if assessment.get("signature") == screener.assessment_signature(metadata):
+                    speed_card = screener.card_from_data(
+                        speed_card_data,
+                        has_full_text=assessment.get("has_full_text", False),
+                    )
+                else:
+                    logger.info(
+                        f"Stale speed card for {metadata.zotero_key}; "
+                        "syncing metadata only until run-screening regenerates it"
+                    )
             if dry_run:
                 logger.info(f"[Dry Run] Would sync: {metadata.title}")
             else:
-                notion.upsert_paper(metadata, speed_card=speed_card)
+                digest = _notion_sync_digest(config, metadata, speed_card)
+                previous_sync = cache.load_json(metadata.zotero_key, "notion_sync.json") or {}
+                if previous_sync.get("digest") == digest:
+                    logger.info(f"Notion unchanged for {metadata.zotero_key}, skipping sync")
+                else:
+                    notion.upsert_paper(metadata, speed_card=speed_card)
+                    cache.save_json(metadata.zotero_key, "notion_sync.json", {"digest": digest})
             count += 1
     logger.info(f"Processed {count} items for Notion sync.")
 
@@ -167,14 +184,24 @@ def run_screening(collection):
         metadata = client.parse_item(item, items)
         if metadata:
             speed_card = None
-            # Check if we already have it in cache to avoid re-screening
+            assessment_signature = screener.assessment_signature(metadata)
             speed_card_data = cache.load_json(metadata.zotero_key, "speed_card.json")
-            if speed_card_data:
-                from paperflow.schemas import SpeedCard
-                speed_card = screener.normalize_decision(SpeedCard(**speed_card_data))
+            assessment = cache.load_json(metadata.zotero_key, "speed_card_input.json") or {}
+            cache_valid = (
+                speed_card_data
+                and assessment.get("signature") == assessment_signature
+                and not config.cache.force_refresh
+            )
+            if cache_valid:
+                speed_card = screener.card_from_data(
+                    speed_card_data,
+                    has_full_text=assessment.get("has_full_text", False),
+                )
                 cache.save_json(metadata.zotero_key, "speed_card.json", speed_card.model_dump())
                 logger.info(f"Loaded existing speed card for {metadata.zotero_key}")
             else:
+                if speed_card_data:
+                    logger.info(f"Assessment inputs changed for {metadata.zotero_key}, regenerating speed card")
                 # Extract PDF text for speed card context
                 pdf_path = locator.locate_and_stage_pdf(metadata.zotero_key, metadata.pdf_attachment_key)
                 paper_text = extractor.extract_text(
@@ -189,6 +216,10 @@ def run_screening(collection):
                 speed_card = screener.generate_speed_card(metadata, paper_text=paper_text)
                 if speed_card:
                     cache.save_json(metadata.zotero_key, "speed_card.json", speed_card.model_dump())
+                    cache.save_json(metadata.zotero_key, "speed_card_input.json", {
+                        "signature": assessment_signature,
+                        "has_full_text": bool(paper_text),
+                    })
                 else:
                     failures.append(metadata.zotero_key)
 
@@ -387,7 +418,8 @@ def deep_read():
     """Run AI deep reading on 'Must Read' papers."""
     logger.info("Running deep reading on 'Must Read' papers (independent of translation)...")
     from paperflow.deep_read import DeepReader
-    from paperflow.schemas import PaperMetadata, SpeedCard
+    from paperflow.schemas import PaperMetadata
+    from paperflow.screening import Screener
     from paperflow.pdf_locator import PDFLocator
     from paperflow.pdf_extract import PDFExtractor
 
@@ -403,6 +435,7 @@ def deep_read():
     reader = DeepReader()
     locator = PDFLocator()
     extractor = PDFExtractor()
+    screener = Screener()
 
     for paper in papers:
         props = paper.get("properties", {})
@@ -414,11 +447,6 @@ def deep_read():
         if not zotero_key:
             continue
 
-        # Check cache first
-        if cache.load_json(zotero_key, "deep_read.json"):
-            logger.info(f"Deep read already exists for {zotero_key}, skipping.")
-            continue
-
         metadata_data = cache.load_json(zotero_key, "metadata.json")
         speed_card_data = cache.load_json(zotero_key, "speed_card.json")
 
@@ -427,7 +455,15 @@ def deep_read():
             continue
 
         metadata = PaperMetadata(**metadata_data)
-        speed_card = SpeedCard(**speed_card_data)
+        assessment = cache.load_json(zotero_key, "speed_card_input.json") or {}
+        speed_card = screener.card_from_data(
+            speed_card_data, has_full_text=assessment.get("has_full_text", False)
+        )
+        deep_signature = reader.assessment_signature(metadata, speed_card)
+        deep_input = cache.load_json(zotero_key, "deep_read_input.json") or {}
+        if cache.load_json(zotero_key, "deep_read.json") and deep_input.get("signature") == deep_signature:
+            logger.info(f"Deep read unchanged for {zotero_key}, skipping.")
+            continue
 
         # Locate original PDF
         try:
@@ -444,6 +480,7 @@ def deep_read():
         deep_read_result = reader.generate_deep_read(metadata, speed_card, paper_text)
         if deep_read_result:
             cache.save_json(zotero_key, "deep_read.json", deep_read_result)
+            cache.save_json(zotero_key, "deep_read_input.json", {"signature": deep_signature})
             # Optionally update status in Notion
             notion._update_page(paper["id"], {"Status": {"select": {"name": "Deep Reading Done"}}})
             logger.info(f"Successfully deep read {zotero_key}")
@@ -453,7 +490,8 @@ def export_obsidian():
     """Export 'Must Read' papers to Obsidian notes."""
     logger.info("Exporting 'Must Read' papers to Obsidian...")
     from paperflow.obsidian_export import ObsidianExporter
-    from paperflow.schemas import PaperMetadata, SpeedCard
+    from paperflow.schemas import PaperMetadata
+    from paperflow.screening import Screener
 
     config = get_config()
     notion = NotionClientWrapper()
@@ -463,6 +501,7 @@ def export_obsidian():
     })
 
     exporter = ObsidianExporter()
+    screener = Screener()
 
     for paper in papers:
         props = paper.get("properties", {})
@@ -483,7 +522,10 @@ def export_obsidian():
             continue
 
         metadata = PaperMetadata(**metadata_data)
-        speed_card = SpeedCard(**speed_card_data)
+        assessment = cache.load_json(zotero_key, "speed_card_input.json") or {}
+        speed_card = screener.card_from_data(
+            speed_card_data, has_full_text=assessment.get("has_full_text", False)
+        )
 
         # Pull translated paths from Notion if they exist (they might not, which is fine)
         try:
@@ -495,7 +537,10 @@ def export_obsidian():
         except IndexError:
             dual_pdf = ""
 
-        digest = _obsidian_sync_digest(config, metadata, speed_card, deep_read_data, mono_pdf, dual_pdf)
+        digest = _obsidian_sync_digest(
+            config, metadata, speed_card, deep_read_data, mono_pdf, dual_pdf,
+            formatter_context=exporter.cache_context(),
+        )
         previous = cache.load_json(zotero_key, "obsidian_sync.json") or {}
         if previous.get("digest") == digest:
             logger.info(f"Obsidian note unchanged for {zotero_key}, skipping export")
@@ -582,12 +627,14 @@ def run_must_read(translate, model_tier):
     # Step 3: Deep Read
     logger.info("--- Step 3: Deep Read ---")
     from paperflow.deep_read import DeepReader
-    from paperflow.schemas import PaperMetadata, SpeedCard
+    from paperflow.schemas import PaperMetadata
+    from paperflow.screening import Screener
     from paperflow.pdf_locator import PDFLocator
     from paperflow.pdf_extract import PDFExtractor
     reader = DeepReader()
     locator = PDFLocator()
     extractor = PDFExtractor()
+    screener = Screener()
     try:
         must_read_papers = notion.list_topic_pages(filter={
             "property": "Human Decision", "select": {"equals": "Must Read"}
@@ -603,16 +650,21 @@ def run_must_read(translate, model_tier):
             continue
         if not zotero_key:
             continue
-        if cache.load_json(zotero_key, "deep_read.json"):
-            logger.info(f"Deep read already exists for {zotero_key}, skipping.")
-            continue
         metadata_data = cache.load_json(zotero_key, "metadata.json")
         speed_card_data = cache.load_json(zotero_key, "speed_card.json")
         if not metadata_data or not speed_card_data:
             logger.warning(f"Missing metadata or speed card for {zotero_key}, skipping deep read.")
             continue
         metadata = PaperMetadata(**metadata_data)
-        speed_card = SpeedCard(**speed_card_data)
+        assessment = cache.load_json(zotero_key, "speed_card_input.json") or {}
+        speed_card = screener.card_from_data(
+            speed_card_data, has_full_text=assessment.get("has_full_text", False)
+        )
+        deep_signature = reader.assessment_signature(metadata, speed_card)
+        deep_input = cache.load_json(zotero_key, "deep_read_input.json") or {}
+        if cache.load_json(zotero_key, "deep_read.json") and deep_input.get("signature") == deep_signature:
+            logger.info(f"Deep read unchanged for {zotero_key}, skipping.")
+            continue
         try:
             notion_local_path = props.get("Local PDF Path", {}).get("rich_text", [])[0].get("text", {}).get("content", "")
         except IndexError:
@@ -622,6 +674,7 @@ def run_must_read(translate, model_tier):
         deep_read_result = reader.generate_deep_read(metadata, speed_card, paper_text)
         if deep_read_result:
             cache.save_json(zotero_key, "deep_read.json", deep_read_result)
+            cache.save_json(zotero_key, "deep_read_input.json", {"signature": deep_signature})
             notion._update_page(paper["id"], {"Status": {"select": {"name": "Deep Reading Done"}}})
             logger.info(f"Successfully deep read {zotero_key}")
 
@@ -643,7 +696,10 @@ def run_must_read(translate, model_tier):
         if not all([metadata_data, speed_card_data, deep_read_data]):
             continue
         metadata = PaperMetadata(**metadata_data)
-        speed_card = SpeedCard(**speed_card_data)
+        assessment = cache.load_json(zotero_key, "speed_card_input.json") or {}
+        speed_card = screener.card_from_data(
+            speed_card_data, has_full_text=assessment.get("has_full_text", False)
+        )
         try:
             mono_pdf = props.get("Translated Mono PDF", {}).get("rich_text", [])[0].get("text", {}).get("content", "")
         except IndexError:
@@ -652,7 +708,10 @@ def run_must_read(translate, model_tier):
             dual_pdf = props.get("Translated Dual PDF", {}).get("rich_text", [])[0].get("text", {}).get("content", "")
         except IndexError:
             dual_pdf = ""
-        digest = _obsidian_sync_digest(get_config(), metadata, speed_card, deep_read_data, mono_pdf, dual_pdf)
+        digest = _obsidian_sync_digest(
+            get_config(), metadata, speed_card, deep_read_data, mono_pdf, dual_pdf,
+            formatter_context=exporter.cache_context(),
+        )
         previous = cache.load_json(zotero_key, "obsidian_sync.json") or {}
         if previous.get("digest") == digest:
             logger.info(f"Obsidian note unchanged for {zotero_key}, skipping export")
