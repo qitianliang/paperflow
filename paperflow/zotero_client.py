@@ -61,8 +61,11 @@ class ZoteroClient:
                 year = int(match.group(0))
 
         venue = data.get('publicationTitle', data.get('proceedingsTitle', data.get('university', '')))
+
         doi = data.get('DOI', '')
         url = data.get('url', '')
+        # Enhance venue and year with LLM
+        venue, year = self._enhance_venue_and_year(title, venue, year, url)
         abstract = data.get('abstractNote', '')
         tags = [t.get('tag') for t in data.get('tags', []) if t.get('tag')]
 
@@ -109,3 +112,26 @@ class ZoteroClient:
             has_pdf=has_pdf,
             pdf_attachment_key=pdf_attachment_key
         )
+
+    def _enhance_venue_and_year(self, title: str, venue: str, year: Optional[int], url: str) -> tuple[str, Optional[int]]:
+        """Use LLM to enhance venue and year information."""
+        try:
+            from paperflow.venue_enhancer import VenueYearEnhancer
+
+            enhancer = VenueYearEnhancer()
+            enhanced_venue, enhanced_year, confidence = enhancer.enhance(
+                title=title,
+                current_venue=venue,
+                current_year=year,
+                url=url
+            )
+
+            logger.info(
+                f"Enhanced venue/year for '{title[:50]}...': "
+                f"venue={enhanced_venue}, year={enhanced_year}, confidence={confidence:.2f}"
+            )
+            return enhanced_venue, enhanced_year
+
+        except Exception as e:
+            logger.warning(f"Failed to enhance venue/year for '{title[:50]}...': {e}")
+            return venue, year
