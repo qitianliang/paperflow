@@ -49,6 +49,12 @@ class SpeedCard(BaseModel):
     risk_need_check: List[str] = Field(default_factory=list)
     recommended_human_action: str = ""
 
+    # 创新性评估的额外字段
+    novelty_validation: List[str] = Field(default_factory=list)  # 对创新性的具体质疑或验证说明
+    claimed_contributions: List[str] = Field(default_factory=list)  # 论文中声称的贡献
+    actual_evidence: List[str] = Field(default_factory=list)  # 实际找到的证据
+    skepticism_flags: List[str] = Field(default_factory=list)  # 发现的灌水信号或质疑点
+
 
 class DeepReadResult(BaseModel):
     """Result from deep reading a paper."""

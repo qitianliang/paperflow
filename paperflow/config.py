@@ -117,6 +117,7 @@ class PdfConfig(BaseModel):
     max_chars_for_deep_read: int = 120000
     sample_sections: int = 3
     extract_strategy: str = "simple"
+    speed_card_full_text: bool = True   # True: extract all pages, skip sampling for speed card
 
 class ScreeningConfig(BaseModel):
     max_concurrent_papers: int = Field(default=1, ge=1, le=8)
@@ -132,6 +133,7 @@ class ScreeningConfig(BaseModel):
         "scan": 3.2,
         "park": 2.2,
     })
+    auto_mark_top_n: int = Field(default=0, ge=0, description="Auto-mark top N Priority Score papers as Must Read after screening")
 
     @model_validator(mode="after")
     def validate_scoring(self) -> "ScreeningConfig":

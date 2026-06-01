@@ -116,6 +116,9 @@ paperflow doctor
 - `NOTION_DATABASE_ID`: 你的 Notion 目标 Database ID。
 - `OBSIDIAN_VAULT_PATH`: Obsidian Vault 的绝对路径。
 - `PDF2ZH_EXECUTABLE`: 默认 `pdf2zh`，如果需要指定路径可填入绝对路径。
+- `TEST_COLLECTION_ID`: 可选，测试环境的 Zotero Collection ID。配合 `config.yaml`
+  中的多主题配置使用 `collection_id_env: "TEST_COLLECTION_ID"`，可在测试/生产
+  环境间快速切换而无需修改代码。详见 [MULTI_TOPIC.md](MULTI_TOPIC.md)。
 
 ### config.yaml 配置说明
 你可以基于 `config.example.yaml` 复制为 `config.yaml`。其中定义了你的：
@@ -253,6 +256,29 @@ paperflow deep-read
 paperflow export-obsidian
 ```
 
+4. **从本地缓存重新同步到 Notion**（不调用 Zotero API）：
+```bash
+# 预览模式
+paperflow sync-notion --from-cache --dry-run
+
+# 正式同步
+paperflow sync-notion --from-cache
+```
+适用场景：
+- Zotero API 临时不可用，但需要将已有缓存同步到 Notion
+- 使用 `TEST_COLLECTION_ID` 测试配置时，测试 collection 为空但本地有缓存数据
+- 批量修复 Notion 数据后重新同步
+
+5. **从本地缓存导出 Obsidian 笔记**（不查询 Notion）：
+```bash
+# 直接从缓存导出（跳过 Notion 查询）
+paperflow export-obsidian --from-cache
+```
+适用场景：
+- Notion API 临时不可用，但缓存中有完整数据（metadata + speed_card + deep_read）
+- 批量重建 Obsidian 笔记
+- 离线环境或 CI/CD 自动化
+
 ### 可选挂回 Zotero 附件
 默认情况下，翻译后的 PDF 只存在于本地，并在 Obsidian 笔记中做关联。你可以在 `config.yaml` 中设置 `zotero.attachment_strategy.upload_translated_pdf_to_zotero: true` 来将其作为子附件挂载回 Zotero 原始条目中。
 *提示：上传到 Zotero 可能会占用你的 Zotero 文件存储空间。*
@@ -319,3 +345,147 @@ paperflow export-obsidian
 1. 相似论文聚类、方法/数据集图谱和 Zotero related-items 回写。
 2. 引用管理联动：生成综述段落素材时携带 citation key 与证据出处。
 3. 可选并发队列与速率限制器，在批量导入时平衡吞吐、API 限流和费用。
+
+---
+
+# 开发者指南（面向 AI 协作者）
+
+> 如果你是由另一个 AI 接手本仓库，以下信息可让你在 5 分钟内定位到需要修改的代码。
+
+## 1. 仓库结构速览
+
+```text
+paperflow/          ← 核心源码
+  main.py           ← CLI 入口：所有命令定义、主流程编排
+  config.py         ← 配置模型（Pydantic），全局单例 get_config()
+  schemas.py        ← 数据模型：PaperMetadata / SpeedCard / DeepReadResult / ...
+  screening.py      ← 速读卡片生成（LLM 调用 + 评分校正）
+  deep_read.py      ← 精读生成（LLM 调用）
+  batch_compare.py  ← 批量对比（跨论文比较）
+  notion_client.py  ← Notion API 封装（upsert、查询、状态更新）
+  zotero_client.py  ← Zotero API 封装（拉取 collection、解析条目）
+  pdf_extract.py    ← PDF 文本抽取（头/中/尾采样或全文模式，限制长度）
+  pdf_locator.py    ← 本地 PDF 定位与缓存 staging
+  pdf2zh_runner.py  ← pdf2zh CLI 调用封装
+  translation_queue.py      ← 翻译队列构建与持久化
+  translation_artifacts.py  ← 翻译产物路径管理（发布到 vault）
+  obsidian_export.py        ← Obsidian Markdown 笔记生成与写入
+  cache.py          ← 本地 JSON 缓存（data/cache/<zotero_key>/）
+  venue_enhancer.py ← 会议/期刊元数据增强（DBLP/OpenAlex/Semantic Scholar）
+  zotero_attach.py  ← 翻译后 PDF 挂回 Zotero 附件
+  utils.py          ← 通用工具（文件名清理等）
+  logging_utils.py  ← 日志配置
+  llm/              ← LLM 调用层（provider 抽象）
+
+prompts/            ← 所有 LLM Prompt 模板（Markdown）
+  speed_card.md
+  deep_read.md
+  obsidian_note.md
+  batch_compare.md
+  pdf2zh_translate_prompt.md
+
+scripts/            ← 运维脚本（对齐 Notion 字段、清理测试数据等）
+tests/              ← 单元测试
+```
+
+## 2. 数据流向（一张图理解全链路）
+
+```
+Zotero Collection
+      ↓
+  [zotero_client]  → PaperMetadata (schemas.py)
+      ↓
+  [pdf_locator + pdf_extract] → 抽取 PDF 文本（头中尾采样或全文模式）
+      ↓
+  [screening.py] → SpeedCard（LLM 生成 + 程序端校正）
+      ↓
+  [notion_client] → 同步到 Notion database
+      ↓
+  （人工在 Notion 标记 Human Decision = Must Read）
+      ↓
+  [translation_queue] → 构建翻译队列
+  [pdf2zh_runner]     → 调用 pdf2zh CLI 生成单语/双语 PDF
+  [translation_artifacts] → 发布译文到 Obsidian vault
+      ↓
+  [deep_read.py] → DeepReadResult（LLM 精读）
+      ↓
+  [obsidian_export.py] → 生成 Markdown 笔记到 vault
+      ↓
+  [notion_client] → 更新 Status = Exported to Obsidian
+```
+
+每条边都带有**变更感知缓存**：内容指纹（SHA256）未变时跳过重复写入/重复 LLM 调用。
+
+## 3. CLI 命令 ↔ 源码映射
+
+| CLI 命令 | 入口函数 | 核心模块 |
+|---------|---------|---------|
+| `paperflow doctor` | `doctor()` | 配置自检 |
+| `paperflow fetch-zotero` | `fetch_zotero()` | `zotero_client` |
+| `paperflow run-screening` | `run_screening()` | `screening` + `notion_client` |
+| `paperflow sync-notion` | `sync_notion()` | `notion_client` |
+| `paperflow batch-compare` | `batch_compare()` | `batch_compare` |
+| `paperflow queue-translation` | `queue_translation()` | `translation_queue` |
+| `paperflow translate-queued` | `translate_queued()` | `pdf2zh_runner` + `translation_artifacts` |
+| `paperflow translate-one` | `translate_one()` | `pdf2zh_runner` |
+| `paperflow sync-translation-status` | `sync_translation_status()` | `translation_queue` + `notion_client` |
+| `paperflow deep-read` | `deep_read()` | `deep_read` + `notion_client` |
+| `paperflow export-obsidian` | `export_obsidian()` | `obsidian_export` + `translation_artifacts` |
+| `paperflow run-must-read` | `run_must_read()` | 上述全部（编排） |
+| `paperflow attach-translations-to-zotero` | `attach_translations_to_zotero()` | `zotero_attach` |
+| `paperflow retry-failed` | `retry_failed()` | `pdf2zh_runner` |
+| `paperflow list-cache` / `clear-cache` | `list_cache()` / `clear_cache()` | `cache` |
+
+## 4. 关键设计决策（修改前必读）
+
+### 4.1 缓存策略
+- 缓存根目录：`data/cache/<zotero_key>/`
+- 每个论文缓存文件：`metadata.json`, `speed_card.json`, `deep_read.json`, `notion_sync.json`, `obsidian_sync.json`
+- 失效条件：输入签名变化（`assessment_signature` / `deep_signature`）或 `config.cache.force_refresh = true`
+- **不要**随意删除缓存文件来"强制刷新"；使用配置开关或修改签名逻辑。
+
+### 4.2 幂等同步
+- Notion 同步：`notion_sync.json` 存内容 digest（SHA256），未变跳过 `upsert_paper`
+- Obsidian 导出：`obsidian_sync.json` 存 digest，未变跳过 `export_note`
+- 新增字段到 Notion/Obsidian 输出时，**必须**让 digest 包含该字段，否则旧缓存会阻止更新。
+
+### 4.3 评分校正（不信任模型自报总分）
+- 模型输出原始 1-5 子评分后，`screening.py` 用 `score_weights` 重算 `priority_score`
+- 用 `suggestion_thresholds` 重算 `ai_suggestion`（Must Read / Scan / Park / Exclude）
+- 无 `key_evidence` 时强制 `confidence = Low`
+- **修改评分逻辑** → 改 `screening.py` 中的 `calculate_scores()` 和 `apply_suggestion_rules()`
+
+### 4.4 多主题隔离
+- `config.project.topics` 定义多主题，`active_topic` 切换当前主题
+- 缓存路径：`data/cache/<topic_slug>/<zotero_key>/`
+- 翻译 staging：`data/translation_staging/<topic_slug>/`
+- Obsidian 输出：`<vault>/Literature/Notes/<topic_slug>/`
+- **新增主题级隔离** → 确保所有文件路径都经过 `config.project.topic_slug`
+
+### 4.5 LLM 路由
+- `config.llm.routing` 将任务映射到 provider + model_tier
+- 任务名：`speed_card`, `deep_read`, `obsidian_note`, `batch_compare`, `metadata_cleanup`, `json_repair`
+- **新增 LLM 任务** → 在 `llm/routing` 添加路由，并在 `llm/` 层实现调用
+
+## 5. 常见修改场景速查
+
+| 想做什么 | 去哪改 |
+|---------|--------|
+| 改速读卡片的评分项或 prompt | `prompts/speed_card.md` + `screening.py` |
+| 改精读输出结构 | `prompts/deep_read.md` + `deep_read.py` + `schemas.py:DeepReadResult` |
+| 改 Obsidian 笔记模板 | `prompts/obsidian_note.md` + `obsidian_export.py` |
+| 改 Notion 字段或同步逻辑 | `notion_client.py` + `scripts/align_notion.py` |
+| 改 PDF 文本抽取策略（采样方式/长度限制/全文模式） | `pdf_extract.py` + `config.pdf.*` |
+| 新增外部元数据源（如 OpenAlex） | `venue_enhancer.py` |
+| 改翻译行为（跳过逻辑、输出路径） | `translation_queue.py` + `translation_artifacts.py` + `pdf2zh_runner.py` |
+| 改 CLI 命令或流程编排 | `main.py`（Click 装饰器） |
+| 改配置项默认值 | `config.example.yaml` + `config.py`（Pydantic 模型） |
+| 改缓存目录结构 | `cache.py` + 所有调用 `cache.save_json/load_json` 的地方 |
+
+## 6. 环境约束
+
+- Python >= 3.11
+- 依赖见 `pyproject.toml` / `requirements.txt`
+- pdf2zh CLI 需独立安装（conda/pip），通过环境变量 `PDF2ZH_EXECUTABLE` 指定路径
+- 不修改 Zotero 原始 PDF；所有操作在 `data/translation_staging/` 的副本上进行
+- Notion Integration 必须添加到目标 Database 的 Connections 中

@@ -84,7 +84,13 @@ class NotionClientWrapper:
 
     @_retry_on_network_error
     def archive_page(self, page_id: str) -> Dict[str, Any]:
-        return self.client.pages.update(page_id=page_id, archived=True)
+        try:
+            return self.client.pages.update(page_id=page_id, archived=True)
+        except Exception as e:
+            if "archived" in str(e).lower():
+                logger.warning(f"Page {page_id} is already archived, skipping.")
+                return {}
+            raise
 
     @_retry_on_network_error
     def query_database(self, filter: Dict[str, Any] = None, sorts: List[Dict[str, Any]] = None, start_cursor: str = "") -> Dict[str, Any]:
@@ -161,15 +167,32 @@ class NotionClientWrapper:
             cursor = response.get("next_cursor") or ""
 
     def get_deep_read_papers(self) -> List[Dict[str, Any]]:
-        """Select automatic top-ranked papers plus explicit human Must Read choices."""
+        """Select papers for deep read.
+
+        Priority:
+        1. Human Decision = Must Read (always included)
+        2. If deep_read_selection.enabled=True, additional top_n ranked papers
+           (excluding those already selected as Must Read)
+        """
         pages = self.list_topic_pages()
         selected: List[Dict[str, Any]] = []
         selected_ids = set()
 
+        # 1. Always include Human Decision = Must Read
+        for page in pages:
+            decision = page.get("properties", {}).get("Human Decision", {}).get("select") or {}
+            if decision.get("name") == "Must Read":
+                selected.append(page)
+                selected_ids.add(page["id"])
+
+        must_read_count = len(selected)
+
+        # 2. Optional: add top_n ranked papers from remaining (non-Must-Read)
         if self.deep_read_selection.enabled and self.deep_read_selection.top_n:
             scored = [
                 page for page in pages
-                if page.get("properties", {}).get("Priority Score", {}).get("number") is not None
+                if page["id"] not in selected_ids
+                and page.get("properties", {}).get("Priority Score", {}).get("number") is not None
             ]
             scored.sort(
                 key=lambda page: page["properties"]["Priority Score"]["number"],
@@ -179,17 +202,10 @@ class NotionClientWrapper:
                 selected.append(page)
                 selected_ids.add(page["id"])
 
-        if self.deep_read_selection.include_human_must_read:
-            for page in pages:
-                decision = page.get("properties", {}).get("Human Decision", {}).get("select") or {}
-                if decision.get("name") == "Must Read" and page["id"] not in selected_ids:
-                    selected.append(page)
-                    selected_ids.add(page["id"])
-
         logger.info(
             f"Selected {len(selected)} papers for deep read "
-            f"(automatic top_n={self.deep_read_selection.top_n if self.deep_read_selection.enabled else 0}, "
-            f"include_human_must_read={self.deep_read_selection.include_human_must_read})"
+            f"(Must Read={must_read_count}, "
+            f"auto top_n={self.deep_read_selection.top_n if self.deep_read_selection.enabled else 0})"
         )
         return selected
 

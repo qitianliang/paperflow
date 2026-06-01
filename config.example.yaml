@@ -43,6 +43,9 @@ pdf:
   max_chars_for_deep_read: 120000
   sample_sections: 3
   extract_strategy: "simple"
+  # When true, Speed Card extracts ALL pages and feeds the full text to the LLM
+  # without sampling. Requires a model with large enough context window (64K+).
+  speed_card_full_text: false
 
 llm:
   default_provider: "deepseek"
@@ -140,6 +143,7 @@ screening:
     must_read: 4.2
     scan: 3.2
     park: 2.2
+  auto_mark_top_n: 0
 
 deep_read_selection:
   enabled: false
